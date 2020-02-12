@@ -1,10 +1,4 @@
-﻿using AMWD.Modbus.Common;
-using AMWD.Modbus.Common.Interfaces;
-using AMWD.Modbus.Common.Structures;
-using AMWD.Modbus.Common.Util;
-using AMWD.Modbus.Tcp.Protocol;
-using AMWD.Modbus.Tcp.Util;
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
@@ -14,6 +8,13 @@ using System.Net.Sockets;
 using System.Reflection;
 using System.Text;
 using System.Threading.Tasks;
+using AMWD.Modbus.Common;
+using AMWD.Modbus.Common.Interfaces;
+using AMWD.Modbus.Common.Structures;
+using AMWD.Modbus.Common.Util;
+using AMWD.Modbus.Tcp.Protocol;
+using AMWD.Modbus.Tcp.Util;
+using Microsoft.Extensions.Logging;
 
 namespace AMWD.Modbus.Tcp.Server
 {
@@ -23,6 +24,8 @@ namespace AMWD.Modbus.Tcp.Server
 	public class ModbusServer : IModbusServer
 	{
 		#region Fields
+		// Optional logger for all actions
+		private readonly ILogger logger;
 
 		private TcpListener tcpListener;
 		private List<TcpClient> tcpClients = new List<TcpClient>();
@@ -65,8 +68,11 @@ namespace AMWD.Modbus.Tcp.Server
 		/// Initializes a new instance of the <see cref="ModbusServer"/> class.
 		/// </summary>
 		/// <param name="port">The port to listen. (Default: 502)</param>
-		public ModbusServer(int port = 502)
+		/// <param name="logger"><see cref="ILogger"/> instance to write log entries.</param>
+		public ModbusServer(int port = 502, ILogger logger = null)
 		{
+			this.logger = logger;
+			
 			Initialization = Task.Run(() => Initialize(port));
 		}
 
@@ -354,7 +360,7 @@ namespace AMWD.Modbus.Tcp.Server
 
 			Console.WriteLine("Modbus server started to listen on " + port + "/tcp");
 
-			Task.Run((Action)WaitForClient);
+			Task.Run(WaitForClient);
 		}
 
 		private async void WaitForClient()
@@ -363,21 +369,24 @@ namespace AMWD.Modbus.Tcp.Server
 			try
 			{
 				client = await tcpListener.AcceptTcpClientAsync();
-				Task.Run((Action)WaitForClient).Forget();
+				Task.Run(WaitForClient).Forget();
 			}
-			catch (NullReferenceException)
+			catch (NullReferenceException ex)
 			{
 				// Server stopping
+				logger?.LogError(ex, "Server stopping");
 				return;
 			}
-			catch (AggregateException)
+			catch (AggregateException ex)
 			{
 				// Server stopping
+				logger?.LogError(ex, "Server stopping");
 				return;
 			}
-			catch (ObjectDisposedException)
+			catch (ObjectDisposedException ex)
 			{
 				// Server stopping
+				logger?.LogError(ex, "Server stopping");
 				return;
 			}
 
@@ -409,6 +418,7 @@ namespace AMWD.Modbus.Tcp.Server
 					{
 						Array.Reverse(bytes);
 					}
+
 					int following = BitConverter.ToUInt16(bytes, 0);
 
 					do
@@ -417,8 +427,7 @@ namespace AMWD.Modbus.Tcp.Server
 						count = await stream.ReadAsync(buffer, 0, buffer.Length);
 						following -= count;
 						requestBytes.AddRange(buffer.Take(count));
-					}
-					while (following > 0);
+					} while (following > 0);
 
 					var request = new Request(requestBytes.ToArray());
 					var response = HandleRequest(request);
@@ -433,14 +442,22 @@ namespace AMWD.Modbus.Tcp.Server
 			catch (EndOfStreamException)
 			{
 				// client closed connection (connecting)
+				logger?.LogTrace($"client closed connection (connecting) {client}", client.Client.RemoteEndPoint);
 			}
-			catch (IOException)
+			catch (IOException ex)
 			{
 				// server stopped
+				logger?.LogError(ex, "server stopped");
 			}
-			catch (ArgumentOutOfRangeException)
+			catch (ArgumentOutOfRangeException ex)
 			{
 				// client closed connection (request parsing)
+				logger?.LogError(ex, $"client closed connection (request parsing) {client}", client.Client.RemoteEndPoint);
+			}
+			catch (NotImplementedException ex)
+			{
+				//Request class may throw this exception on an invalid frame
+				logger?.LogError(ex, $"client closed connection (invalid request) {client}", client.Client.RemoteEndPoint);
 			}
 
 			if (!isDisposed)
